@@ -16,15 +16,62 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+try:
+    import psycopg2
+    import psycopg2.extras
+except ImportError:
+    psycopg2 = None
+
 # ==============================================================================
 # 1. CONFIGURATION & FILE PATHS
 # ==============================================================================
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.environ.get("OFFPAY_DB_PATH") or os.path.join(BASE_DIR, "master_bank.db")
-KEY_SEED_PATH = os.environ.get("OFFPAY_KEY_SEED_PATH") or os.path.join(
-    BASE_DIR, "bank_master_key.seed"
-)
+
+
+def _load_env_file() -> None:
+    """Load key-value pairs from root or backend .env into os.environ if not already set."""
+    candidates = [
+        Path(BASE_DIR).parent / ".env",
+        Path(BASE_DIR).parent / ".env.local",
+        Path(BASE_DIR) / ".env",
+        Path(BASE_DIR) / ".env.local",
+    ]
+    for env_path in candidates:
+        if env_path.is_file():
+            try:
+                for line in env_path.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    if "=" in line:
+                        k, v = line.split("=", 1)
+                        k = k.strip()
+                        v = v.strip().strip("'\"")
+                        if k and k not in os.environ:
+                            os.environ[k] = v
+            except Exception:
+                pass
+
+
+_load_env_file()
+
+
+def _resolve_config_path(env_var: str, default_filename: str) -> str:
+    val = os.environ.get(env_var)
+    if not val:
+        return os.path.join(BASE_DIR, default_filename)
+    p = Path(val)
+    if p.is_absolute():
+        return str(p)
+    repo_root = Path(BASE_DIR).parent
+    if (repo_root / p).exists() or (repo_root / p.parent).exists():
+        return str((repo_root / p).resolve())
+    return str((Path(BASE_DIR) / p).resolve())
+
+
+DB_PATH = _resolve_config_path("OFFPAY_DB_PATH", "master_bank.db")
+KEY_SEED_PATH = _resolve_config_path("OFFPAY_KEY_SEED_PATH", "bank_master_key.seed")
 
 # Global holder for bank master keypair
 bank_private_key: Optional[ed25519.Ed25519PrivateKey] = None
@@ -40,13 +87,37 @@ bank_public_key_b64_str: Optional[str] = None
 def load_or_generate_bank_key(
     seed_path: Union[Path, str, None] = None,
 ) -> ed25519.Ed25519PrivateKey:
-    """Loads an existing 32-byte Ed25519 seed from disk or generates and persists a new one."""
+    """Loads 32-byte Ed25519 seed from BANK_MASTER_SEED env var, local seed file, or generates a new one."""
+    global bank_private_key, bank_public_key_b64_str
+
+    # 1. Read BANK_MASTER_SEED from os.environ (Base64 string of 32 bytes)
+    env_seed = os.environ.get("BANK_MASTER_SEED")
+    if env_seed:
+        text = env_seed.strip()
+        seed_bytes: Optional[bytes] = None
+        try:
+            b64 = base64.b64decode(text)
+            if len(b64) == 32:
+                seed_bytes = b64
+        except Exception:
+            pass
+        if seed_bytes is None and len(text) == 64:
+            try:
+                seed_bytes = bytes.fromhex(text)
+            except Exception:
+                pass
+        if seed_bytes and len(seed_bytes) == 32:
+            bank_private_key = ed25519.Ed25519PrivateKey.from_private_bytes(seed_bytes)
+            bank_public_key_b64_str = None
+            return bank_private_key
+
+    # 2. Local fallback: read/write bank_master_key.seed on disk
     path = Path(seed_path or KEY_SEED_PATH)
     path.parent.mkdir(parents=True, exist_ok=True)
 
     if path.exists():
         raw_content = path.read_bytes()
-        seed_bytes: Optional[bytes] = None
+        seed_bytes = None
 
         if len(raw_content) == 32:
             seed_bytes = raw_content
@@ -68,7 +139,9 @@ def load_or_generate_bank_key(
                     pass
 
         if seed_bytes and len(seed_bytes) == 32:
-            return ed25519.Ed25519PrivateKey.from_private_bytes(seed_bytes)
+            bank_private_key = ed25519.Ed25519PrivateKey.from_private_bytes(seed_bytes)
+            bank_public_key_b64_str = None
+            return bank_private_key
 
     # Generate fresh Ed25519 keypair
     private_key = ed25519.Ed25519PrivateKey.generate()
@@ -79,6 +152,8 @@ def load_or_generate_bank_key(
     )
     # Persist as Base64 string for portability & inspection
     path.write_text(base64.b64encode(seed_bytes).decode("utf-8"), encoding="utf-8")
+    bank_private_key = private_key
+    bank_public_key_b64_str = None
     return private_key
 
 
@@ -105,12 +180,81 @@ def get_bank_private_key() -> ed25519.Ed25519PrivateKey:
 
 
 # ==============================================================================
-# 3. DATABASE INITIALIZATION & CONNECTION
+# 3. DATABASE INITIALIZATION & CONNECTION (PostgreSQL & SQLite)
 # ==============================================================================
 
 
-def get_db_connection(db_path: Union[Path, str, None] = None) -> sqlite3.Connection:
-    """Opens a SQLite connection with WAL mode and row factory enabled."""
+class PostgresCursorWrapper:
+    """Wraps psycopg2 cursor to convert '?' SQL placeholders to '%s'."""
+
+    def __init__(self, cursor: Any):
+        self._cursor = cursor
+
+    def execute(self, query: str, params: Any = None):
+        converted_query = query.replace("?", "%s")
+        if params is not None:
+            return self._cursor.execute(converted_query, params)
+        return self._cursor.execute(converted_query)
+
+    def fetchone(self):
+        return self._cursor.fetchone()
+
+    def fetchall(self):
+        return self._cursor.fetchall()
+
+    @property
+    def rowcount(self) -> int:
+        return self._cursor.rowcount
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._cursor, name)
+
+
+class PostgresConnectionWrapper:
+    """Wraps psycopg2 connection to provide DictCursor and handle commit/close context."""
+
+    def __init__(self, conn: Any):
+        self._conn = conn
+
+    def cursor(self):
+        kwargs = {}
+        if psycopg2 is not None and hasattr(psycopg2, "extras"):
+            kwargs["cursor_factory"] = psycopg2.extras.DictCursor
+        return PostgresCursorWrapper(self._conn.cursor(**kwargs))
+
+    def execute(self, query: str, params: Any = None):
+        cur = self.cursor()
+        return cur.execute(query, params)
+
+    def commit(self):
+        return self._conn.commit()
+
+    def rollback(self):
+        return self._conn.rollback()
+
+    def close(self):
+        return self._conn.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        try:
+            if exc_type is not None:
+                self._conn.rollback()
+            else:
+                self._conn.commit()
+        finally:
+            self._conn.close()
+
+
+def get_db_connection(db_path: Union[Path, str, None] = None):
+    """Opens a PostgreSQL connection via psycopg2 if DATABASE_URL is set; otherwise falls back to SQLite."""
+    database_url = os.environ.get("DATABASE_URL")
+    if database_url and psycopg2 is not None and db_path is None:
+        raw_conn = psycopg2.connect(database_url)
+        return PostgresConnectionWrapper(raw_conn)
+
     path = Path(db_path or DB_PATH)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path), timeout=30.0)
@@ -121,7 +265,7 @@ def get_db_connection(db_path: Union[Path, str, None] = None) -> sqlite3.Connect
 
 
 def init_db(db_path: Union[Path, str, None] = None) -> None:
-    """Initializes the SQLite database tables according to OffPay specification."""
+    """Initializes the database tables (PostgreSQL or SQLite) according to OffPay specification."""
     with get_db_connection(db_path) as conn:
         cursor = conn.cursor()
 
@@ -132,7 +276,7 @@ def init_db(db_path: Union[Path, str, None] = None) -> None:
                 account_id TEXT PRIMARY KEY,
                 owner_name TEXT NOT NULL,
                 public_key TEXT NOT NULL,
-                online_balance REAL DEFAULT 1000.0,
+                online_balance DOUBLE PRECISION DEFAULT 1000.0,
                 is_merchant INTEGER DEFAULT 0
             );
             """
@@ -144,8 +288,8 @@ def init_db(db_path: Union[Path, str, None] = None) -> None:
             CREATE TABLE IF NOT EXISTS leases (
                 lease_id TEXT PRIMARY KEY,
                 payer_pubkey TEXT NOT NULL,
-                amount_leased REAL NOT NULL,
-                expires_at INTEGER NOT NULL,
+                amount_leased DOUBLE PRECISION NOT NULL,
+                expires_at BIGINT NOT NULL,
                 is_settled INTEGER DEFAULT 0
             );
             """
@@ -158,44 +302,45 @@ def init_db(db_path: Union[Path, str, None] = None) -> None:
                 voucher_id TEXT PRIMARY KEY,
                 payer_pubkey TEXT NOT NULL,
                 payee_id TEXT NOT NULL,
-                amount REAL NOT NULL,
-                nonce INTEGER NOT NULL,
-                timestamp INTEGER NOT NULL,
-                cleared_at INTEGER NOT NULL,
+                amount DOUBLE PRECISION NOT NULL,
+                nonce BIGINT NOT NULL,
+                timestamp BIGINT NOT NULL,
+                cleared_at BIGINT NOT NULL,
                 UNIQUE(payer_pubkey, nonce)
             );
             """
         )
 
-        # Ensure UNIQUE(payer_pubkey, nonce) constraint exists on existing databases
-        cursor.execute(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name='cleared_vouchers'"
-        )
-        table_row = cursor.fetchone()
-        if table_row and "UNIQUE(payer_pubkey, nonce)" not in table_row[0].replace(" ", ""):
+        # SQLite-specific migration check for legacy SQLite databases
+        if not isinstance(conn, PostgresConnectionWrapper):
             cursor.execute(
-                """
-                CREATE TABLE cleared_vouchers_migrated (
-                    voucher_id TEXT PRIMARY KEY,
-                    payer_pubkey TEXT NOT NULL,
-                    payee_id TEXT NOT NULL,
-                    amount REAL NOT NULL,
-                    nonce INTEGER NOT NULL,
-                    timestamp INTEGER NOT NULL,
-                    cleared_at INTEGER NOT NULL,
-                    UNIQUE(payer_pubkey, nonce)
-                );
-                """
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='cleared_vouchers'"
             )
-            cursor.execute(
-                """
-                INSERT OR IGNORE INTO cleared_vouchers_migrated 
-                SELECT voucher_id, payer_pubkey, payee_id, amount, nonce, timestamp, cleared_at 
-                FROM cleared_vouchers;
-                """
-            )
-            cursor.execute("DROP TABLE cleared_vouchers;")
-            cursor.execute("ALTER TABLE cleared_vouchers_migrated RENAME TO cleared_vouchers;")
+            table_row = cursor.fetchone()
+            if table_row and "UNIQUE(payer_pubkey, nonce)" not in table_row[0].replace(" ", ""):
+                cursor.execute(
+                    """
+                    CREATE TABLE cleared_vouchers_migrated (
+                        voucher_id TEXT PRIMARY KEY,
+                        payer_pubkey TEXT NOT NULL,
+                        payee_id TEXT NOT NULL,
+                        amount REAL NOT NULL,
+                        nonce INTEGER NOT NULL,
+                        timestamp INTEGER NOT NULL,
+                        cleared_at INTEGER NOT NULL,
+                        UNIQUE(payer_pubkey, nonce)
+                    );
+                    """
+                )
+                cursor.execute(
+                    """
+                    INSERT OR IGNORE INTO cleared_vouchers_migrated 
+                    SELECT voucher_id, payer_pubkey, payee_id, amount, nonce, timestamp, cleared_at 
+                    FROM cleared_vouchers;
+                    """
+                )
+                cursor.execute("DROP TABLE cleared_vouchers;")
+                cursor.execute("ALTER TABLE cleared_vouchers_migrated RENAME TO cleared_vouchers;")
 
         # Useful indices
         cursor.execute(
@@ -525,7 +670,7 @@ app.add_middleware(
 
 @app.on_event("startup")
 def startup_event():
-    """Initializes the SQLite schema and ensures Bank Master keypair is loaded on startup."""
+    """Initializes the database schema and ensures Bank Master keypair is loaded on startup."""
     init_db()
     load_or_generate_bank_key()
     get_bank_public_key_b64()
@@ -534,11 +679,13 @@ def startup_event():
 @app.get("/", tags=["Health"])
 @app.get("/api/v1/health", tags=["Health"])
 def health_check():
+    is_pg = bool(os.environ.get("DATABASE_URL") and psycopg2 is not None)
+    db_name = "postgresql" if is_pg else os.path.basename(str(DB_PATH))
     return {
         "status": "healthy",
         "service": "AirBirr Central Clearinghouse",
         "bank_public_key": get_bank_public_key_b64(),
-        "database": os.path.basename(str(DB_PATH)),
+        "database": db_name,
     }
 
 
@@ -619,7 +766,7 @@ def register_account(req: RegisterRequest):
                 },
             )
 
-        initial_balance = 1000.0
+        initial_balance = 1000000.0  # 1 Million ETB initial test balance
         is_merchant_int = 1 if req.is_merchant else 0
 
         cursor.execute(
@@ -924,7 +1071,7 @@ def list_accounts():
             """
             SELECT account_id, owner_name, public_key, online_balance, is_merchant
             FROM accounts
-            ORDER BY rowid ASC
+            ORDER BY account_id ASC
             """
         )
         rows = cursor.fetchall()
@@ -1059,4 +1206,6 @@ def get_account_detail(account_id: str):
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    host = os.environ.get("HOST", "0.0.0.0")
+    port = int(os.environ.get("PORT", "8000"))
+    uvicorn.run("main:app", host=host, port=port, reload=True)
