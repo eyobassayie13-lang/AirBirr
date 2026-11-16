@@ -20,6 +20,10 @@ class DatabaseService {
   static const String databaseName = 'airbirr_offline.db';
   static const int databaseVersion = 1;
 
+  /// Default initial test balance: 1,000,000.00 ETB (100,000,000 cents)
+  static const int defaultInitialBalanceCents = 100000000;
+  static const String defaultInitialLeaseId = 'lease_init_1m';
+
   final Database? _dbInstance;
   final String? customDbPath;
   final CryptoService? cryptoService;

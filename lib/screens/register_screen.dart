@@ -112,8 +112,12 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
       const secureStorage = FlutterSecureStorage();
       await secureStorage.write(key: 'user_wallet_pin', value: pin);
 
-      // 4. Persist profile locally in SQLite wallet state using normalized phone number
+      // 4. Seed initial wallet state with 1M ETB test balance and persist profile locally
       final dbService = ref.read(databaseServiceProvider);
+      await dbService.initWalletState(
+        initialBalanceCents: DatabaseService.defaultInitialBalanceCents,
+        leaseId: DatabaseService.defaultInitialLeaseId,
+      );
       await dbService.saveUserProfile(
         accountId: normalizedPhone,
         displayName: displayName,

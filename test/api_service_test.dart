@@ -193,9 +193,9 @@ void main() {
       expect(settledIds, isEmpty);
     });
 
-    test('baseUrl defaults to https://upriver-carrousel-battery.ngrok-free.dev and normalizes trailing slashes', () {
+    test('baseUrl defaults to https://airbirr-api.vercel.app and normalizes trailing slashes', () {
       final defaultService = ApiService();
-      expect(defaultService.baseUrl, equals('https://upriver-carrousel-battery.ngrok-free.dev'));
+      expect(defaultService.baseUrl, equals('https://airbirr-api.vercel.app'));
 
       final slashService = ApiService(baseUrl: 'http://192.168.1.100:8000///');
       expect(slashService.baseUrl, equals('http://192.168.1.100:8000'));

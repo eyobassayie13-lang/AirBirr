@@ -55,7 +55,7 @@ class _ServerSettingsDialogState extends State<ServerSettingsDialog> {
         keyboardType: TextInputType.url,
         decoration: InputDecoration(
           labelText: 'Server URL',
-          hintText: 'e.g., http://192.168.1.15:8000',
+          hintText: 'e.g., https://airbirr-api.vercel.app',
           border: const OutlineInputBorder(),
           errorText: _errorText,
         ),
