@@ -282,12 +282,10 @@ class _SendTabState extends ConsumerState<SendTab> with SingleTickerProviderStat
     required bool isNearby,
   }) async {
     final amountController = TextEditingController(text: '50.0');
-    bool simulateTamper = false;
 
     final result = await showDialog<Map<String, dynamic>>(
       context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
+      builder: (ctx) => AlertDialog(
           title: Text('Pay to $payeeName - Enter Amount (ETB)'),
           content: Column(
             mainAxisSize: MainAxisSize.min,
@@ -315,52 +313,6 @@ class _SendTabState extends ConsumerState<SendTab> with SingleTickerProviderStat
                   border: OutlineInputBorder(),
                 ),
               ),
-              const SizedBox(height: 14),
-              // Developer Simulation Box
-              Container(
-                decoration: BoxDecoration(
-                  color: Colors.amber.withValues(alpha: 0.08),
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: Colors.amber.withValues(alpha: 0.3)),
-                ),
-                child: CheckboxListTile(
-                  key: const Key('simulate_tamper_checkbox'),
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 0),
-                  dense: true,
-                  title: Row(
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                        decoration: BoxDecoration(
-                          color: Colors.amber.withValues(alpha: 0.2),
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        child: const Text(
-                          'DEV TEST',
-                          style: TextStyle(
-                            fontSize: 10,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.amber,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      const Expanded(
-                        child: Text(
-                          'Simulate tampering (Corrupt Signature)',
-                          style: TextStyle(fontSize: 12),
-                        ),
-                      ),
-                    ],
-                  ),
-                  value: simulateTamper,
-                  onChanged: (val) {
-                    setDialogState(() {
-                      simulateTamper = val ?? false;
-                    });
-                  },
-                ),
-              ),
             ],
           ),
           actions: [
@@ -375,7 +327,7 @@ class _SendTabState extends ConsumerState<SendTab> with SingleTickerProviderStat
                 if (parsed != null && parsed > 0) {
                   Navigator.pop(ctx, {
                     'amount': parsed,
-                    'simulateTamper': simulateTamper,
+                    'simulateTamper': false,
                   });
                 }
               },
@@ -383,7 +335,6 @@ class _SendTabState extends ConsumerState<SendTab> with SingleTickerProviderStat
             ),
           ],
         ),
-      ),
     );
 
     if (result != null && mounted) {

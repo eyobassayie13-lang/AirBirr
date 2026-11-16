@@ -20,8 +20,15 @@ enum RegisterResult {
 /// Backend synchronization service connecting Flutter clients to the
 /// FastAPI central clearinghouse and identity authority.
 class ApiService {
-  /// Default permanent Central Bank clearinghouse server URL.
-  static const String defaultServerUrl = 'https://upriver-carrousel-battery.ngrok-free.dev';
+  /// Default Central Bank clearinghouse server URL.
+  /// Can be configured via `.env` using `--dart-define-from-file=.env` (keys: OFFPAY_API_URL or API_BASE_URL).
+  static const String defaultServerUrl = String.fromEnvironment(
+    'OFFPAY_API_URL',
+    defaultValue: String.fromEnvironment(
+      'API_BASE_URL',
+      defaultValue: 'https://airbirr-api.vercel.app',
+    ),
+  );
 
   /// Base URL of the clearinghouse backend.
   String _baseUrl;

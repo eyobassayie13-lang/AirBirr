@@ -173,7 +173,7 @@ class _MainShellScreenState extends ConsumerState<MainShellScreen> {
             children: [
               ListTile(
                 leading: const Icon(Icons.dns_outlined),
-                title: const Text('Developer Server Override'),
+                title: const Text('Central Bank Server Settings'),
                 subtitle: Text(api.baseUrl, style: const TextStyle(fontSize: 12)),
                 onTap: () async {
                   Navigator.pop(ctx);
@@ -330,32 +330,8 @@ class _MainShellScreenState extends ConsumerState<MainShellScreen> {
           IconButton(
             key: const Key('server_settings_button'),
             icon: const Icon(Icons.settings),
-            tooltip: 'Settings & Override',
+            tooltip: 'Server Settings',
             onPressed: _showSettingsDialog,
-          ),
-
-          // More Options Menu
-          PopupMenuButton<String>(
-            icon: const Icon(Icons.more_vert),
-            onSelected: (value) {
-              if (value == 'developer') {
-                Navigator.of(context).push(
-                  MaterialPageRoute(builder: (_) => const TestScreen()),
-                );
-              }
-            },
-            itemBuilder: (ctx) => [
-              const PopupMenuItem(
-                value: 'developer',
-                child: Row(
-                  children: [
-                    Icon(Icons.developer_mode, size: 18),
-                    SizedBox(width: 8),
-                    Text('Developer Test Suite'),
-                  ],
-                ),
-              ),
-            ],
           ),
         ],
       ),

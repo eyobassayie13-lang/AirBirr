@@ -68,7 +68,19 @@ class _HomeTabState extends ConsumerState<HomeTab> {
       final db = ref.read(databaseServiceProvider);
       final crypto = ref.read(cryptoServiceProvider);
 
-      final state = await db.getWalletState();
+      var state = await db.getWalletState();
+      final currentBalanceCents = (state['offline_balance_cents'] as num?)?.toInt() ?? 0;
+      final activeLeaseId = state['active_lease_id'] as String?;
+
+      // Auto-seed initial test balance of 1M ETB if balance is 0 and lease is null/empty
+      if (currentBalanceCents == 0 && (activeLeaseId == null || activeLeaseId.isEmpty)) {
+        await db.initWalletState(
+          initialBalanceCents: DatabaseService.defaultInitialBalanceCents,
+          leaseId: DatabaseService.defaultInitialLeaseId,
+        );
+        state = await db.getWalletState();
+      }
+
       final pubKey = await crypto.getPublicKeyBase64();
       final history = await db.getAllVouchersHistory();
       final unsynced = await db.getUnsyncedVouchers();
