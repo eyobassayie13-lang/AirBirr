@@ -25,6 +25,8 @@ TEST_DIR = Path(tempfile.mkdtemp(prefix="offpay_backend_test_"))
 TEST_DB_PATH = TEST_DIR / "master_bank_test.db"
 TEST_KEY_SEED_PATH = TEST_DIR / "bank_master_key_test.seed"
 
+os.environ.pop("DATABASE_URL", None)
+os.environ.pop("BANK_MASTER_SEED", None)
 os.environ["OFFPAY_DB_PATH"] = str(TEST_DB_PATH)
 os.environ["OFFPAY_KEY_SEED_PATH"] = str(TEST_KEY_SEED_PATH)
 
@@ -135,9 +137,9 @@ def test_suite():
             },
         )
         assert code in (200, 201), f"Expected 200/201, got {code}: {cust_resp}"
-        assert cust_resp["online_balance"] == 1000.0
+        assert cust_resp["online_balance"] == 1000000.0
         assert cust_resp["certificate"] is None
-        print("[PASS] 3. Customer account registered with 1000.0 ETB balance.")
+        print("[PASS] 3. Customer account registered with 1000000.0 ETB balance.")
 
         # 4. POST /api/v1/auth/register (Merchant with Identity Certificate)
         merch_priv, merch_pub_b64 = generate_test_client_keypair()
@@ -203,7 +205,7 @@ def test_suite():
         )
         assert code == 200, f"Expected 200, got {code}: {lease_resp}"
         assert lease_resp["amount_leased"] == 300.0
-        assert lease_resp["remaining_online_balance"] == 700.0
+        assert lease_resp["remaining_online_balance"] == 999700.0
 
         lease_cert = lease_resp["certificate"]
         assert lease_cert["payer_pubkey"] == cust_pub_b64
@@ -221,7 +223,7 @@ def test_suite():
             bank_pubkey_b64, lease_bytes, lease_cert["signature"]
         )
         assert is_lease_valid, "Bank signature on Lease Certificate failed verification!"
-        print("[PASS] 6. Offline lease issued, balance deducted to 700.0 ETB, LeaseCertificate verified.")
+        print("[PASS] 6. Offline lease issued, balance deducted to 999700.0 ETB, LeaseCertificate verified.")
 
         # 7. POST /api/v1/lease/issue (Insufficient balance)
         code, fail_lease = make_request(
@@ -229,7 +231,7 @@ def test_suite():
             method="POST",
             data={
                 "account_id": "0911000001",
-                "amount_to_lease": 800.0,  # Only 700.0 left!
+                "amount_to_lease": 2000000.0,  # Exceeds remaining 999700.0 balance!
                 "duration_days": 7,
             },
         )
@@ -266,13 +268,13 @@ def test_suite():
         assert sync_resp["newly_cleared_count"] == 1
         assert sync_resp["rejected_count"] == 0
 
-        # Check Merchant online balance was credited from 1000.0 to 1050.0 ETB
+        # Check Merchant online balance was credited from 1000000.0 to 1000050.0 ETB
         code, merch_acc = make_request(f"{base_url}/api/v1/accounts/merchant_bole_cafe")
         assert code == 200
-        assert merch_acc["online_balance"] == 1050.0, f"Expected 1050.0, got {merch_acc['online_balance']}"
+        assert merch_acc["online_balance"] == 1000050.0, f"Expected 1000050.0, got {merch_acc['online_balance']}"
         assert len(merch_acc["received_vouchers"]) == 1
         assert merch_acc["received_vouchers"][0]["voucher_id"] == voucher_id
-        print("[PASS] 8. Valid voucher cleared and merchant credited from 1000.0 to 1050.0 ETB.")
+        print("[PASS] 8. Valid voucher cleared and merchant credited from 1000000.0 to 1000050.0 ETB.")
 
         # 9. POST /api/v1/settlement/batch-sync (Idempotency check: Re-uploading same voucher)
         code, sync_resp2 = make_request(
@@ -285,9 +287,9 @@ def test_suite():
         assert sync_resp2["already_synced_count"] == 1
         assert sync_resp2["newly_cleared_count"] == 0
 
-        # Verify Merchant was NOT re-credited (still 1050.0)
+        # Verify Merchant was NOT re-credited (still 1000050.0)
         code, merch_acc2 = make_request(f"{base_url}/api/v1/accounts/merchant_bole_cafe")
-        assert merch_acc2["online_balance"] == 1050.0
+        assert merch_acc2["online_balance"] == 1000050.0
         print("[PASS] 9. Idempotency verified: Duplicate voucher re-synced without double-crediting.")
 
         # 10. POST /api/v1/settlement/batch-sync (Tampered voucher rejected)
@@ -337,15 +339,15 @@ def test_suite():
         assert f"{cust_pub_b64}_3" in sync_resp4["settled_voucher_ids"]
         assert sync_resp4["newly_cleared_count"] == 1
 
-        # Check Merchant balance: 1050.0 + 25.0 = 1075.0 ETB
+        # Check Merchant balance: 1000050.0 + 25.0 = 1000075.0 ETB
         code, merch_acc3 = make_request(f"{base_url}/api/v1/accounts/merchant_bole_cafe")
-        assert merch_acc3["online_balance"] == 1075.0
-        print("[PASS] 11. 124-byte binary packed voucher verified and settled (Balance = 1075.0 ETB).")
+        assert merch_acc3["online_balance"] == 1000075.0
+        print("[PASS] 11. 124-byte binary packed voucher verified and settled (Balance = 1000075.0 ETB).")
 
         # 12. GET /api/v1/accounts/{account_id} (Customer History)
         code, cust_acc = make_request(f"{base_url}/api/v1/accounts/0911000001")
         assert code == 200
-        assert cust_acc["online_balance"] in (625.0, 700.0)
+        assert cust_acc["online_balance"] in (999625.0, 999700.0)
         assert len(cust_acc["sent_vouchers"]) == 2  # voucher #1 and voucher #3
         assert len(cust_acc["leases"]) == 1  # 300.0 ETB lease
         print("[PASS] 12. Customer account detail & full transaction history verified.")
@@ -418,8 +420,76 @@ def test_suite():
         assert f"{cust_pub_b64}_4" not in sent_ids  # Filtered out so not duplicated!
         print("[PASS] 15. Self-transfers correctly separated and excluded from sent_vouchers.")
 
+        # 16. BANK_MASTER_SEED env var verification
+        test_seed_bytes = b"01234567890123456789012345678901"  # exactly 32 bytes
+        test_seed_b64 = base64.b64encode(test_seed_bytes).decode("utf-8")
+        os.environ["BANK_MASTER_SEED"] = test_seed_b64
+        env_key = bmain.load_or_generate_bank_key()
+        expected_pub = ed25519.Ed25519PrivateKey.from_private_bytes(test_seed_bytes).public_key()
+        expected_pub_b64 = base64.b64encode(
+            expected_pub.public_bytes(
+                encoding=serialization.Encoding.Raw,
+                format=serialization.PublicFormat.Raw,
+            )
+        ).decode("utf-8")
+        assert bmain.get_bank_public_key_b64() == expected_pub_b64
+        # Clean up env var and restore file-based seed
+        del os.environ["BANK_MASTER_SEED"]
+        restored_key = bmain.load_or_generate_bank_key(TEST_KEY_SEED_PATH)
+        assert bmain.get_bank_public_key_b64() != expected_pub_b64
+        print("[PASS] 16. BANK_MASTER_SEED env var loaded, verified and restored fallback successfully.")
+
+        # 17. PostgresCursorWrapper '?' to '%s' conversion verification
+        class MockRawCursor:
+            def __init__(self):
+                self.last_query = None
+                self.last_params = None
+                self.rowcount = 1
+            def execute(self, q, p=None):
+                self.last_query = q
+                self.last_params = p
+
+        mock_cur = MockRawCursor()
+        wrapper = bmain.PostgresCursorWrapper(mock_cur)
+        wrapper.execute("SELECT * FROM accounts WHERE account_id = ? AND online_balance >= ?", ("0911000001", 100.0))
+        assert mock_cur.last_query == "SELECT * FROM accounts WHERE account_id = %s AND online_balance >= %s"
+        assert mock_cur.last_params == ("0911000001", 100.0)
+        print("[PASS] 17. PostgresCursorWrapper correctly converted '?' placeholders to '%s'.")
+
+        # 18. PostgresConnectionWrapper transaction & connection closing verification
+        class MockRawConn:
+            def __init__(self):
+                self.committed = False
+                self.rolled_back = False
+                self.closed = False
+            def cursor(self, cursor_factory=None):
+                return MockRawCursor()
+            def commit(self):
+                self.committed = True
+            def rollback(self):
+                self.rolled_back = True
+            def close(self):
+                self.closed = True
+
+        mock_conn = MockRawConn()
+        with bmain.PostgresConnectionWrapper(mock_conn) as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT 1")
+        assert mock_conn.committed is True
+        assert mock_conn.closed is True
+
+        mock_conn_err = MockRawConn()
+        try:
+            with bmain.PostgresConnectionWrapper(mock_conn_err) as conn:
+                raise ValueError("simulated db error")
+        except ValueError:
+            pass
+        assert mock_conn_err.rolled_back is True
+        assert mock_conn_err.closed is True
+        print("[PASS] 18. PostgresConnectionWrapper commit, rollback, and close verified.")
+
         print("==================================================================")
-        print("ALL 15 BACKEND INTEGRATION TESTS PASSED SUCCESSFULLY!")
+        print("ALL 18 BACKEND INTEGRATION TESTS PASSED SUCCESSFULLY!")
         print("==================================================================")
 
     finally:
