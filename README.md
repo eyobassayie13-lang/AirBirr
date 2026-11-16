@@ -131,6 +131,7 @@ This repository follows professional git discipline with atomic commits, convent
 | **#4** | [`feat/bank-settlement-backend`](file:///home/eyob/Projects/AirBirr/docs/pull_requests/PR-04-bank-settlement-backend.md) | Central Bank Clearinghouse & Voucher Settlement Backend | `feat(backend)`, `test(backend)` |
 | **#5** | [`feat/wallet-ui-and-theme`](file:///home/eyob/Projects/AirBirr/docs/pull_requests/PR-05-wallet-ui-and-theme.md) | Offline Wallet UI Screens, Theme & Riverpod Controllers | `feat(ui)`, `feat(app)` |
 | **#6** | [`test/e2e-and-docs`](file:///home/eyob/Projects/AirBirr/docs/pull_requests/PR-06-e2e-and-docs.md) | E2E Integration Tests, CI Pipeline & Documentation | `test(ui)`, `test(e2e)`, `ci`, `docs` |
+| **#7** | [`feat/neon-cloud-and-client-polish`](file:///home/eyob/Projects/AirBirr/docs/pull_requests/PR-07-neon-cloud-and-client-polish.md) | Neon Cloud PostgreSQL, Production Config & Client Polish | `feat(backend)`, `feat(ui)`, `test(backend)`, `chore(env)` |
 
 Detailed pull request summaries and verification steps are archived under [`docs/pull_requests/`](file:///home/eyob/Projects/AirBirr/docs/pull_requests/).
 
